@@ -90,6 +90,20 @@ test_expect_success 'the two users are served by different processes' '
 	test "$pid_a" != "$pid_b"
 '
 
+# With both services live, check the isolation directly rather than inferring
+# it from the two being distinct.  t1001 covers the same refusal but with only
+# one account, so it cannot catch a socket-group or unit-template mistake that
+# needs two real per-user services running at once to show up.
+#
+# The 0660 root:web-user mode stops USER_A before SO_PEERCRED is consulted, so
+# curl cannot connect at all: exit 7.  Assert that exact code, so a timeout
+# (28) can never pass for the refusal under test.
+test_expect_success 'a user cannot reach another user'\''s socket directly' '
+	test_expect_code 7 sudo -u ${USER_A} curl ${CURL_TIMEOUT_ARGS} -s -o /dev/null \
+	    --unix-socket ${SYSTEM_TEST_SOCKDIR}/${USER_B}.sock \
+	    http://localhost/api/v1/health
+'
+
 # The config rejects anything that is not a plain username *before* it is
 # interpolated into /run/flux-rest-server/$remote_user.sock.  This account
 # authenticates successfully, so only that guard can produce the 403.
