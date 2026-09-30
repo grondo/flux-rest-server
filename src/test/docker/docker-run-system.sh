@@ -101,9 +101,23 @@ if test "$(uname)" = "Darwin"; then
     PODMAN="podman"
     BUILD_UID=1000
     BUILD_GID=1000
+    #  Three states to tell apart, because the fix differs: no machine at all,
+    #  a machine that is not rootful, and one that is but is not running.
+    #  `machine list -q` prints nothing when none exists; `machine inspect`
+    #  fails outright in that case, so it cannot be used to detect it.
+    if test -z "$(podman machine list -q 2>/dev/null)"; then
+        die "no podman machine exists; the system tests need a rootful one.\n  podman machine init --rootful\n  podman machine start"
+    fi
+    #  .Rootful and .State are plain strings in the inspect output.  Treat an
+    #  empty .Rootful as not-rootful: it means a podman too old to report it,
+    #  where the machine cannot be trusted to be rootful either.
     if ! podman machine inspect --format '{{.Rootful}}' 2>/dev/null \
          | grep -qi true; then
-        die "the podman machine must be rootful for --privileged.\n  podman machine stop\n  podman machine set --rootful\n  podman machine start\n(or: podman machine init --rootful, if you have none yet)"
+        die "the podman machine must be rootful for --privileged.\n  podman machine stop\n  podman machine set --rootful\n  podman machine start"
+    fi
+    if ! podman machine inspect --format '{{.State}}' 2>/dev/null \
+         | grep -qi running; then
+        die "the podman machine is not running.\n  podman machine start"
     fi
 else
     PODMAN="sudo podman"
