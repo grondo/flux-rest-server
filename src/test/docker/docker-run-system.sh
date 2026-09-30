@@ -42,7 +42,26 @@ Options:\n\
      --no-cache          Run podman build with --no-cache\n\
 "
 
-GETOPTS=$(/usr/bin/getopt -u -o $short_opts -l $long_opts -n $prog -- "$@") \
+#  Long options need GNU getopt.  Find it on PATH rather than at a fixed path:
+#  /usr/bin/getopt is the BSD one on macOS, which cannot parse them at all.
+#  Homebrew installs GNU getopt outside the default PATH, so say how to get it.
+#  GNU getopt exits 4 for --test; BSD getopt does not.
+is_gnu_getopt() { "$1" --test >/dev/null 2>&1; test $? -eq 4; }
+
+GETOPT=
+for g in getopt \
+         /opt/homebrew/opt/gnu-getopt/bin/getopt \
+         /usr/local/opt/gnu-getopt/bin/getopt; do
+    if is_gnu_getopt "$g"; then
+        GETOPT=$g
+        break
+    fi
+done
+test -n "$GETOPT" \
+    || die "GNU getopt is required (BSD getopt cannot parse long options).\n"\
+           "On macOS: brew install gnu-getopt"
+
+GETOPTS=$(${GETOPT} -u -o $short_opts -l $long_opts -n $prog -- "$@") \
     || die "$usage"
 eval set -- "$GETOPTS"
 
@@ -65,25 +84,55 @@ command -v podman >/dev/null \
 
 . ${TOP}/src/test/checks-lib.sh
 
+#  The container needs --privileged, --systemd=always and the host cgroup fs,
+#  so podman has to be rootful.  On Linux that means sudo.  On macOS podman is
+#  a client talking to a VM, where the privilege actually lives: sudo would
+#  apply to the client, which is neither wanted nor available, so the machine
+#  has to be rootful instead.
+#  The container account is built with the invoking uid/gid so the bind-mounted
+#  source tree is writable.  That reasoning only holds on Linux, where the
+#  mount is the host filesystem directly.  macOS passes it through the VM,
+#  which remaps ownership anyway, and the host ids collide besides: the default
+#  admin group there is staff at gid 20, which is already `games` in the EL
+#  base images, so groupadd fails.  Use the Dockerfile's own defaults.
+BUILD_UID=$(id -u)
+BUILD_GID=$(id -g)
+
+if test "$(uname)" = "Darwin"; then
+    PODMAN="podman"
+    BUILD_UID=1000
+    BUILD_GID=1000
+    if ! podman machine inspect --format '{{.Rootful}}' 2>/dev/null \
+         | grep -qi true; then
+        die "the podman machine must be rootful for --privileged.\n"\
+            "  podman machine stop\n"\
+            "  podman machine set --rootful\n"\
+            "  podman machine start\n"\
+            "(or: podman machine init --rootful, if you have none yet)"
+    fi
+else
+    PODMAN="sudo podman"
+fi
+
 #  Tag per base image, so alternating --image does not silently reuse an image
 #  built from a different base.
 TAG=flux-rest-server-systest:$(printf %s "${IMAGE##*[:/]}" | tr -c '[:alnum:]_.-' '-')
 NAME=flux-rest-server-system-$$
 
 checks_group "Building $TAG from $IMAGE" \
-  sudo podman build \
+  ${PODMAN} build \
     ${NOCACHE} \
     --build-arg IMAGESRC=$IMAGE \
     --build-arg USER=$USER \
-    --build-arg UID=$(id -u) \
-    --build-arg GID=$(id -g) \
+    --build-arg UID=$BUILD_UID \
+    --build-arg GID=$BUILD_GID \
     -t $TAG \
     ${TOP}/src/test/docker/system \
     || die "podman build failed"
 
 #  Always tear the container down, however we leave: a failed test, a hung
 #  podman exec, or a cancelled CI job.
-cleanup() { sudo podman rm -f $NAME >/dev/null 2>&1; }
+cleanup() { ${PODMAN} rm -f $NAME >/dev/null 2>&1; }
 trap cleanup EXIT
 
 #  --privileged/--systemd=always/cgroup mount/apparmor=unconfined are what it
@@ -93,7 +142,7 @@ trap cleanup EXIT
 #  No --network=host: the tests run inside the container via podman exec, so
 #  nginx on :8080 never needs to be reachable from the host.
 checks_group "Launching system instance container $NAME" \
-  sudo podman run -d \
+  ${PODMAN} run -d \
     --name=$NAME \
     --privileged \
     --systemd=always \
@@ -109,13 +158,13 @@ checks_group "Launching system instance container $NAME" \
 TIMEOUT=180
 checks_group_start "Waiting for flux.service (up to ${TIMEOUT}s)"
 i=0
-while ! sudo podman exec $NAME systemctl is-active --quiet flux.service; do
+while ! ${PODMAN} exec $NAME systemctl is-active --quiet flux.service; do
     i=$((i + 5))
     if test $i -ge $TIMEOUT; then
         echo "=== systemctl status flux.service ==="
-        sudo podman exec $NAME systemctl status flux.service --no-pager -l 2>&1
+        ${PODMAN} exec $NAME systemctl status flux.service --no-pager -l 2>&1
         echo "=== journal ==="
-        sudo podman exec $NAME journalctl --no-pager -n 200 2>&1
+        ${PODMAN} exec $NAME journalctl --no-pager -n 200 2>&1
         checks_group_end
         die "flux.service failed to start within ${TIMEOUT}s"
     fi
@@ -140,15 +189,15 @@ if test -n "$INTERACTIVE"; then
     #  Install and configure first, so the shell lands in a system instance
     #  running the current code rather than an empty one.
     checks_group "Installing flux-rest-server" \
-      sudo podman exec -u $USER "${env_args[@]}" -w $WORKDIR \
+      ${PODMAN} exec -u $USER "${env_args[@]}" -w $WORKDIR \
         $NAME src/test/system_run.sh --setup-only \
         || die "setup failed"
-    sudo podman exec -ti -u $USER "${env_args[@]}" -w $WORKDIR $NAME bash
+    ${PODMAN} exec -ti -u $USER "${env_args[@]}" -w $WORKDIR $NAME bash
     exit $?
 fi
 
 checks_group "Running system tests" \
-  sudo podman exec -u $USER "${env_args[@]}" -w $WORKDIR \
+  ${PODMAN} exec -u $USER "${env_args[@]}" -w $WORKDIR \
     $NAME src/test/system_run.sh
 RC=$?
 
