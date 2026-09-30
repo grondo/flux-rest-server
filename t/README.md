@@ -64,6 +64,22 @@ sudo apparmor_parser -R /etc/apparmor.d/unix-chkpwd
 sudo apparmor_parser -R /etc/apparmor.d/sudo
 ```
 
+On macOS, podman runs containers in a VM, which has to be rootful for the
+container to get `--privileged` and the cgroup filesystem. GNU getopt is also
+needed, since the BSD one cannot parse long options:
+
+```sh
+brew install podman gnu-getopt
+export PATH="$(brew --prefix gnu-getopt)/bin:$PATH"
+
+podman machine init --rootful
+podman machine start
+# or, for an existing rootless machine:
+#   podman machine stop && podman machine set --rootful && podman machine start
+```
+
+The script checks both and tells you what to do if either is missing.
+
 ## Adding a test
 
 Copy the top of an existing script, make it executable, and add it to `TESTS`
