@@ -58,8 +58,7 @@ for g in getopt \
     fi
 done
 test -n "$GETOPT" \
-    || die "GNU getopt is required (BSD getopt cannot parse long options).\n"\
-           "On macOS: brew install gnu-getopt"
+    || die "GNU getopt is required (BSD getopt cannot parse long options).\nOn macOS: brew install gnu-getopt"
 
 GETOPTS=$(${GETOPT} -u -o $short_opts -l $long_opts -n $prog -- "$@") \
     || die "$usage"
@@ -104,11 +103,7 @@ if test "$(uname)" = "Darwin"; then
     BUILD_GID=1000
     if ! podman machine inspect --format '{{.Rootful}}' 2>/dev/null \
          | grep -qi true; then
-        die "the podman machine must be rootful for --privileged.\n"\
-            "  podman machine stop\n"\
-            "  podman machine set --rootful\n"\
-            "  podman machine start\n"\
-            "(or: podman machine init --rootful, if you have none yet)"
+        die "the podman machine must be rootful for --privileged.\n  podman machine stop\n  podman machine set --rootful\n  podman machine start\n(or: podman machine init --rootful, if you have none yet)"
     fi
 else
     PODMAN="sudo podman"
